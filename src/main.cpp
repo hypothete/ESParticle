@@ -4,20 +4,20 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <Wire.h>
+#include <HttpClient.h>
 #include "secrets.h"
 
-#define SCL 4
-#define SDA 5
+#define SCL 22
+#define SDA 21
 
-SerialPM pms(PMS5003, Serial);
-
+SerialPM pms(PMS5003, Serial2);
 Adafruit_BMP280 bmp;
-
 WebServer server(80);
+HTTPClient http;
 
-uint16_t ugA = 0;
-uint16_t ugB = 0;
-uint16_t ugC = 0;
+uint16_t pm1 = 0;
+uint16_t pm25 = 0;
+uint16_t pm10 = 0;
 
 float temperature, pressure, altitude;
 
@@ -37,25 +37,25 @@ void updateMicrograms() {
   pms.read();
   // Serial.printf("PM1.0 %2d, PM2.5 %2d, PM10 %2d [ug/m3]\n",
   //                 pms.pm01, pms.pm25, pms.pm10);
-  ugA = pms.pm01;
-  ugB = pms.pm25;
-  ugC = pms.pm10;
+  pm1 = pms.pm01;
+  pm25 = pms.pm25;
+  pm10 = pms.pm10;
 }
 
 void updatePAT() {
   temperature = bmp.readTemperature();
-  pressure =    bmp.readPressure();
-  altitude =    bmp.readAltitude();
+  pressure =    bmp.readPressure() / 100.0;
+  altitude =    bmp.readAltitude(1014.75);
 }
 
 void handleGet() {
   // server.sendHeader("Access-Control-Allow-Origin", "*");
   String values = "";
-  values += ugA;
+  values += pm1;
   values += "\n";
-  values += ugB;
+  values += pm25;
   values += "\n";
-  values += ugC;
+  values += pm10;
   values += "\n";
   values += pressure;
   values += "\n";
@@ -70,12 +70,24 @@ void handleNotFound() {
   server.send(404, "text/plain", "File not found\n");
 }
 
+void postToThingsboard() {
+  char json[200];
+  sprintf(
+    json,
+    "{ \"pm1\": %u, \"pm25\": %u, \"pm10\": %u, \"altitude\": %f, \"pressure\": %f, \"temperature\": %f }",
+    pm1, pm25, pm10, altitude, pressure, temperature
+  );
+  http.begin(THINGSBOARD_URL);
+  http.addHeader("Content-Type", "application/json");
+  http.POST(json); // returns int error
+  http.end();
+}
+
 void setupServer() {
   server.on("/", handleGet);
   server.onNotFound(handleNotFound);
   server.begin();
 }
-
 
 void setup() {
   Wire.begin(SDA, SCL, 115200);
@@ -96,9 +108,10 @@ void setup() {
 
 void loop() {
   unsigned long timeNow = millis();
-  if (timeNow - lastTime > 3000) {
+  if (timeNow - lastTime > 30000) {
     updateMicrograms();
     updatePAT();
+    postToThingsboard();
     lastTime = timeNow;
   }
 
